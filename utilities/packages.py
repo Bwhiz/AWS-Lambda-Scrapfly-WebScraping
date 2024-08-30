@@ -97,6 +97,9 @@ def retrieve_trading_halt(tdh_tickers) -> pd.DataFrame:
 
     return target_df
     
+# loop through close monitorings generated daily, if 'Proposed issue of securities' in legacy_announcment, 
+# or do something similar to subsetting like data_interested = close_monitorings[close_monitorings['header'].str.contains("Proposed issue of securities", case=False, na=False)] 
+# save the above to s3 and download the associated pdfs to a folder
 
 def download_pdfs(file):
     
@@ -124,3 +127,117 @@ def download_pdfs(file):
             print(f"Failed to download {url}. Error: {e}")
         except boto3.exceptions.Boto3Error as e:
             print(f"Failed to upload {file_name} to S3. Error: {e}")
+
+
+# this would be called on trading_halt df;
+# we load the 'monitoring.json' with the load_ticker_data func
+
+#i.e monitoring_json = load_ticker_data()
+def load_ticker_data(): 
+    bucket_name = 'placement-trackers-storage'
+    json_file_key = 'ticker_monitoring.json'
+
+    try:
+        obj = self.s3_client.get_object(Bucket=bucket_name, Key=json_file_key)
+        data = json.loads(obj['Body'].read().decode('utf-8'))
+        return data
+    except self.s3_client.exceptions.NoSuchKey:
+        # Return an empty dictionary if the file doesn't exist
+        return {}
+
+def add_to_json(trading_halt_df, monitoring_json):
+
+    # i.e updated_json = add_to_json(trading_halt_df, monitoring_json)
+
+    ticker_data = monitoring_json
+    for _, row in trading_halt_df.iterrows():
+
+            ticker = row['ASX Code']
+
+            if ticker not in ticker_data:
+                ticker_data[ticker] = {
+                    'added_date': today.isoformat(),
+                    'status': 'Active'
+                }
+    return ticker_data
+            
+
+
+
+
+class TickerMonitor:
+    # Class variables for S3 bucket and JSON file
+    bucket_name = 'placement-trackers-storage'
+    json_file_key = 'ticker_monitoring.json'
+
+    def __init__(self):
+        self.s3_client = boto3.client('s3')
+
+    def load_ticker_data(self):
+        try:
+            obj = self.s3_client.get_object(Bucket=self.bucket_name, Key=self.json_file_key)
+            data = json.loads(obj['Body'].read().decode('utf-8'))
+            return data
+        except self.s3_client.exceptions.NoSuchKey:
+            # Return an empty dictionary if the file doesn't exist
+            return {}
+
+    def save_ticker_data(self, data):
+        self.s3_client.put_object(
+            Bucket=self.bucket_name,
+            Key=self.json_file_key,
+            Body=json.dumps(data)
+        )
+
+    def update_json_with_tickers(self, df, closed_df ):
+        """
+        df: trading halt df for adding the tickers to be monitored,
+        closed_df: is the close_monitoring dfs that has "Proposed issue of securities" in their 'header'
+        """
+        ticker_data = self.load_ticker_data()
+        today = dt.utcnow().date()
+
+        for _, row in df.iterrows():
+            ticker = row['ASX Code']
+            
+            # If ticker is found in the closed DataFrame, update status to 'Closed' and remove it
+            if ticker in closed_df['issuer_code'].values:
+                ticker_data[ticker] = {
+                    'added_date': today.isoformat(),
+                    'status': 'Closed'
+                }
+                continue
+
+            if ticker not in ticker_data:
+                ticker_data[ticker] = {
+                    'added_date': today.isoformat(),
+                    'status': 'Active'
+                }
+
+        # Remove 'Closed' tickers
+        closed_tickers = [ticker for ticker, info in ticker_data.items() if info['status'] == 'Closed']
+        for ticker in closed_tickers:
+            del ticker_data[ticker]
+
+
+        # clean up expired tickers i.e ticker > 10 days
+        expired_tickers = []
+        for ticker, info in ticker_data.items():
+            added_date = datetime.fromisoformat(info['added_date']).date()
+            days_since_added = (today - added_date).days
+
+            if days_since_added > 10:
+                info['status'] = 'Inactive'
+                expired_tickers.append(ticker)
+
+        # Remove expired tickers
+        for ticker in expired_tickers:
+            del ticker_data[ticker]
+
+        self.save_ticker_data(ticker_data)
+        print("Updated ticker data saved to S3.")
+
+
+    def monitor_tickers(self, df, closed_df):
+        # Update tickers from the dataframe and check if they should be marked as closed
+        self.update_json_with_tickers(df, closed_df)

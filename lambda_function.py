@@ -37,7 +37,7 @@ def lambda_handler(event, context):
         # Upload DataFrames to S3
         upload_to_s3(daily_announcements, f'daily_data_{current_day_str}', 'daily_announcements')
         upload_to_s3(trading_halt_announcements, f'trading_halt_data_{current_day_str}', 'tradingHalt_tickers')
-        upload_to_s3(close_monitorings, f'close_monitoring_data_{current_day_str}', 'xCloser_monitorings')
+        #upload_to_s3(close_monitorings, f'close_monitoring_data_{current_day_str}', 'xCloser_monitorings')
         
     except Exception as e:
         send_email_notification(f"Error uploading files to S3: {str(e)}")
