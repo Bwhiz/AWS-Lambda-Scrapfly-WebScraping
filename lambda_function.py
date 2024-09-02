@@ -1,8 +1,19 @@
 import json, os
 from datetime import datetime as dt
-from utilities import scrapfly_func, upload_to_s3, retrieve_announcement, retrieve_trading_halt, download_pdfs
+from utilities import (
+                        scrapfly_func, 
+                        upload_to_s3, 
+                        retrieve_announcement, 
+                        retrieve_trading_halt, 
+                        download_pdfs, 
+                        load_ticker_monitoring,
+                        add_to_json,
+                        check_appendix_3b,
+                        save_updated_json_monitoring
+                    )
 from utilities import send_email_notification
 
+monitoring_json = load_ticker_monitoring() # load the json file for monitoring trading halt tickers
 
 def lambda_handler(event, context):
     
@@ -38,7 +49,6 @@ def lambda_handler(event, context):
         upload_to_s3(daily_announcements, f'daily_data_{current_day_str}', 'daily_announcements')
         upload_to_s3(trading_halt_announcements, f'trading_halt_data_{current_day_str}', 'tradingHalt_tickers')
         #upload_to_s3(close_monitorings, f'close_monitoring_data_{current_day_str}', 'xCloser_monitorings')
-        
     except Exception as e:
         send_email_notification(f"Error uploading files to S3: {str(e)}")
         return {
@@ -46,9 +56,15 @@ def lambda_handler(event, context):
             'body': json.dumps(f"Error uploading files to S3: {str(e)}")
         }
     try:
-        # download pdfs
-        # call the function on 'close_monitorings'
-        download_pdfs(close_monitorings)
+        updated_json = add_to_json(close_monitorings, monitoring_json)
+        close_monitoring_df = close_monitorings[close_monitorings['Announcement'].str.contains("Proposed issue of securities", case=False, na=False)]
+
+        proposed_securities_df, json_proposed_securities = check_appendix_3b(close_monitoring_df, updated_json)
+        if not proposed_securities_df.empty:
+            upload_to_s3(proposed_securities_df, f'proposed_security_data_{current_day_str}', 'xProposed_issues_securities')
+            download_pdfs(proposed_securities_df)
+        clean_up_json(json_proposed_securities)
+        
     except Exception as e:
         send_email_notification(f"Error downloading pdfs to S3: {str(e)}")
         return {
@@ -57,8 +73,8 @@ def lambda_handler(event, context):
         }
         
     # Successful execution
-    total_csvs = len(daily_announcements) + len(trading_halt_announcements) + len(close_monitorings)
-    total_pdfs = len(close_monitorings)
+    total_csvs = len(daily_announcements) + len(trading_halt_announcements)
+    total_pdfs = len(proposed_securities_df)
     
     end_time = dt.now()
     duration = end_time - start_time

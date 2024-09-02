@@ -119,7 +119,7 @@ def download_pdfs(file):
             # Upload the PDF file content to S3
             s3.put_object(
                 Bucket=bucket_name,
-                Key=f"PDFS/{file_name}",
+                Key=f"PDFS/proposed_securities/{file_name}",
                 Body=response.content
                 )
 
@@ -130,18 +130,17 @@ def download_pdfs(file):
 
 
 # this would be called on trading_halt df;
-# we load the 'monitoring.json' with the load_ticker_data func
-
-#i.e monitoring_json = load_ticker_data()
-def load_ticker_data(): 
+# we load the 'monitoring.json' with the load_ticker_monitoring func
+#i.e monitoring_json = load_ticker_monitoring()
+def load_ticker_monitoring(): 
     bucket_name = 'placement-trackers-storage'
     json_file_key = 'ticker_monitoring.json'
 
     try:
-        obj = self.s3_client.get_object(Bucket=bucket_name, Key=json_file_key)
+        obj = s3.get_object(Bucket=bucket_name, Key=json_file_key)
         data = json.loads(obj['Body'].read().decode('utf-8'))
         return data
-    except self.s3_client.exceptions.NoSuchKey:
+    except s3.exceptions.NoSuchKey:
         # Return an empty dictionary if the file doesn't exist
         return {}
 
@@ -152,7 +151,7 @@ def add_to_json(trading_halt_df, monitoring_json):
     ticker_data = monitoring_json
     for _, row in trading_halt_df.iterrows():
 
-            ticker = row['ASX Code']
+            ticker = row['issuer_code']
 
             if ticker not in ticker_data:
                 ticker_data[ticker] = {
@@ -160,7 +159,66 @@ def add_to_json(trading_halt_df, monitoring_json):
                     'status': 'Active'
                 }
     return ticker_data
-            
+
+# close_monitoring_df = trading_halt[trading_halt['Announcement'].str.contains("Proposed issue of securities", case=False, na=False)]
+def check_appendix_3b(close_monitoring_df, updated_json):
+
+    json_proposed_securities = updated_json
+    output = pd.DataFrame(columns=[
+        'id', 'document_release_date', 'document_date', 'url', 'relative_url',
+        'header', 'market_sensitive', 'number_of_pages', 'size',
+        'legacy_announcement', 'issuer_code', 'issuer_short_name',
+        'issuer_full_name'
+    ])
+    for _, row in close_monitoring_df.iterrows():
+        if row['issuer_code'] in json_proposed_securities:
+            key = row['issuer_code']
+            json_proposed_securities[key]['status'] = 'Closed'
+            output = pd.concat([output, row], ignore_index=True)
+    return output, json_proposed_securities
+
+# now save proposed_securities_df to s3 and use download pdf function to download the pdfs
+# proposed_securities_df, json_proposed_securities = check_appendix_3b(close_monitoring_df, updated_json)
+# also clean up the json_proposed_securities 
+def save_updated_json_monitoring(data):
+
+        bucket_name = 'placement-trackers-storage'
+        json_file_key = 'ticker_monitoring.json'
+
+        s3.put_object(
+            Bucket=bucket_name,
+            Key=json_file_key,
+            Body=json.dumps(data)
+        )
+
+        print("updated json monitoring file")
+
+def clean_up_json(json_file):
+
+    ticker_data = json_file
+    # Remove 'Closed' tickers
+    closed_tickers = [ticker for ticker, info in ticker_data.items() if info['status'] == 'Closed']
+    for ticker in closed_tickers:
+        del ticker_data[ticker]
+
+    # clean up expired tickers i.e ticker > 10 days
+    expired_tickers = []
+    for ticker, info in ticker_data.items():
+        added_date = datetime.fromisoformat(info['added_date']).date()
+        days_since_added = (today - added_date).days
+
+        if days_since_added > 10:
+            info['status'] = 'Inactive'
+            expired_tickers.append(ticker)
+
+    # Remove expired tickers
+    for ticker in expired_tickers:
+        del ticker_data[ticker]
+
+    save_updated_json_monitoring(ticker_data)
+
+
+
 
 
 
@@ -171,19 +229,19 @@ class TickerMonitor:
     json_file_key = 'ticker_monitoring.json'
 
     def __init__(self):
-        self.s3_client = boto3.client('s3')
+        self.s3 = boto3.client('s3')
 
     def load_ticker_data(self):
         try:
-            obj = self.s3_client.get_object(Bucket=self.bucket_name, Key=self.json_file_key)
+            obj = self.s3.get_object(Bucket=self.bucket_name, Key=self.json_file_key)
             data = json.loads(obj['Body'].read().decode('utf-8'))
             return data
-        except self.s3_client.exceptions.NoSuchKey:
+        except self.s3.exceptions.NoSuchKey:
             # Return an empty dictionary if the file doesn't exist
             return {}
 
     def save_ticker_data(self, data):
-        self.s3_client.put_object(
+        self.s3.put_object(
             Bucket=self.bucket_name,
             Key=self.json_file_key,
             Body=json.dumps(data)
